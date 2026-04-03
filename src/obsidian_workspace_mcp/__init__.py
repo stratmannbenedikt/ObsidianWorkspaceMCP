@@ -26,12 +26,12 @@ from .models import (
     SortOrder,
     VaultStats,
 )
-from .server import init_vault, main, server
+from .server import init_vault, main, mcp
 from .vault import Vault, VaultFileError, VaultSecurityError
 
 __all__ = [
     # Server
-    "server",
+    "mcp",
     "main",
     "init_vault",
     # Vault
