@@ -1,0 +1,1 @@
+"""Obsidian Workspace MCP Server."""
