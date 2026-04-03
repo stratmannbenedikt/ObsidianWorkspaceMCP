@@ -167,6 +167,106 @@ class SearchResponse(BaseModel):
     )
 
 
+# ---------------------------------------------------------------------------
+# Directory Tree
+# ---------------------------------------------------------------------------
+
+
+class DirectoryTreeNode(BaseModel):
+    """A single node in the directory tree."""
+
+    name: str = Field(description="Name of the file or directory")
+    path: str = Field(description="Relative path from the vault root")
+    is_dir: bool = Field(description="True if this is a directory")
+    children: list[DirectoryTreeNode] = Field(
+        default_factory=list, description="Child entries (directories first, then files)"
+    )
+    truncated: bool = Field(
+        default=False, description="True if entries were truncated due to max_files_per_dir"
+    )
+
+
+class DirectoryTreeResponse(BaseModel):
+    """Result of a directory tree operation."""
+
+    tree: DirectoryTreeNode = Field(description="Root node of the tree")
+    text: str = Field(description="Human-readable tree string (like the `tree` CLI)")
+
+
+# ---------------------------------------------------------------------------
+# Templates
+# ---------------------------------------------------------------------------
+
+
+class TemplateField(BaseModel):
+    """A single field in a page template (frontmatter property)."""
+
+    name: str = Field(description="Property name")
+    type: str = Field(
+        default="string",
+        description="Value type: string, number, boolean, date, list, or multi-list",
+    )
+    required: bool = Field(default=True, description="Whether this field is required")
+    default: Any = Field(default=None, description="Default value if not provided")
+    description: str = Field(default="", description="Human-readable description of the field")
+
+
+class Template(BaseModel):
+    """A page template defining frontmatter structure."""
+
+    name: str = Field(description="Template name (unique identifier)")
+    description: str = Field(description="What this template is for")
+    fields: list[TemplateField] = Field(description="Frontmatter fields in order")
+
+
+class CreateTemplateRequest(BaseModel):
+    """Request to create or update a template."""
+
+    name: str = Field(min_length=1, description="Template name (unique identifier)")
+    description: str = Field(min_length=1, description="What this template is for")
+    fields: list[TemplateField] = Field(
+        min_length=1, description="Frontmatter fields in order"
+    )
+
+
+class CreateTemplateResponse(BaseModel):
+    """Result of creating/updating a template."""
+
+    name: str
+    message: str = "Template saved"
+
+
+class GetTemplateResponse(BaseModel):
+    """Result of retrieving a template."""
+
+    template: Template
+
+
+class ListTemplatesResponse(BaseModel):
+    """Result of listing all templates."""
+
+    templates: list[Template] = Field(description="All available templates")
+
+
+class CreateFromTemplateRequest(BaseModel):
+    """Request to create a new file from a template."""
+
+    template_name: str = Field(min_length=1, description="Name of the template to use")
+    path: str = Field(min_length=1, description="Relative path for the new file")
+    values: dict[str, Any] = Field(
+        default_factory=dict, description="Values for template fields (keyed by field name)"
+    )
+    body: str = Field(default="", description="Markdown body content below the frontmatter")
+
+
+class CreateFromTemplateResponse(BaseModel):
+    """Result of creating a file from a template."""
+
+    path: str
+    template_name: str
+    content: str = Field(description="Full content that was written")
+
+
 class ErrorDetail(BaseModel):
     """Structured error information."""
 
