@@ -1,9 +1,19 @@
 [project]
 name = "obsidian-workspace-mcp"
 version = "0.1.0"
-description = "MCP server for Obsidian workspace management"
+description = "Minimal MCP server for safe, agent-friendly Obsidian vault operations"
+readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "mcp[cli]>=1.0",
+    "pydantic>=2.12.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+obsidian-workspace-mcp = "obsidian_workspace_mcp.__main__:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -18,3 +28,8 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
