@@ -21,6 +21,7 @@ from mcp.types import (
 
 from .models import (
     CreateFileResponse,
+    CreateFromTemplateRequest,
     DeleteFileResponse,
     EditFileRequest,
     ErrorDetail,
@@ -261,6 +262,109 @@ async def list_tools() -> ListToolsResult:
                     "required": ["query"],
                 },
             ),
+            Tool(
+                name="directory_tree",
+                description="Return a tree-style view of a vault directory (like the `tree` CLI). Directories are listed first, then files, with truncation support.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "default": "",
+                            "description": "Relative path within the vault (empty = root).",
+                        },
+                        "max_depth": {
+                            "type": "integer",
+                            "default": 3,
+                            "description": "Maximum recursion depth (1 = only immediate children).",
+                        },
+                        "max_files_per_dir": {
+                            "type": "integer",
+                            "default": 20,
+                            "description": "Maximum number of entries to show per directory (excess shown as '... N more').",
+                        },
+                    },
+                },
+            ),
+            Tool(
+                name="create_template",
+                description="Create or update a page template. Templates define frontmatter property structures (fields with types, defaults, descriptions) that can be used to create consistently-structured notes.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Template name (unique identifier).",
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "What this template is for.",
+                        },
+                        "fields": {
+                            "type": "array",
+                            "description": "Array of field definitions, each with: name (str), type (string|number|boolean|date|list|multi-list), required (bool), default (any), description (str).",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {"type": "string"},
+                                    "type": {"type": "string", "default": "string"},
+                                    "required": {"type": "boolean", "default": True},
+                                    "default": {},
+                                    "description": {"type": "string", "default": ""},
+                                },
+                                "required": ["name"],
+                            },
+                        },
+                    },
+                    "required": ["name", "description", "fields"],
+                },
+            ),
+            Tool(
+                name="get_template",
+                description="Retrieve a template by name, showing its fields and structure.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Template name to retrieve.",
+                        },
+                    },
+                    "required": ["name"],
+                },
+            ),
+            Tool(
+                name="list_templates",
+                description="List all available page templates with their names and descriptions.",
+                inputSchema={"type": "object", "properties": {}},
+            ),
+            Tool(
+                name="create_from_template",
+                description="Create a new markdown file using a template's frontmatter structure. Fill in field values; omitted required fields get empty placeholders.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "template_name": {
+                            "type": "string",
+                            "description": "Name of the template to use.",
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "Relative path for the new file (e.g. 'papers/My Paper.md').",
+                        },
+                        "values": {
+                            "type": "object",
+                            "description": "Key-value pairs for template fields. Omitted fields use their defaults.",
+                        },
+                        "body": {
+                            "type": "string",
+                            "default": "",
+                            "description": "Markdown body content below the frontmatter.",
+                        },
+                    },
+                    "required": ["template_name", "path"],
+                },
+            ),
         ]
     )
 
@@ -318,6 +422,45 @@ async def call_tool(
                 file_extension=(arguments or {}).get("file_extension"),
             )
             result = v.search(req)
+            return [_model_to_dict(result)]
+
+        elif name == "directory_tree":
+            result = v.directory_tree(
+                path=(arguments or {}).get("path", ""),
+                max_depth=(arguments or {}).get("max_depth", 3),
+                max_files_per_dir=(arguments or {}).get("max_files_per_dir", 20),
+            )
+            return [_model_to_dict(result)]
+
+        elif name == "create_template":
+            from .models import CreateTemplateRequest as CTR, TemplateField
+            fields = [
+                TemplateField(**f) for f in (arguments or {}).get("fields", [])
+            ]
+            req = CTR(
+                name=_required(arguments, "name"),
+                description=_required(arguments, "description"),
+                fields=fields,
+            )
+            result = v.create_template(req)
+            return [_model_to_dict(result)]
+
+        elif name == "get_template":
+            result = v.get_template(_required(arguments, "name"))
+            return [_model_to_dict(result)]
+
+        elif name == "list_templates":
+            result = v.list_templates()
+            return [_model_to_dict(result)]
+
+        elif name == "create_from_template":
+            req = CreateFromTemplateRequest(
+                template_name=_required(arguments, "template_name"),
+                path=_required(arguments, "path"),
+                values=(arguments or {}).get("values", {}),
+                body=(arguments or {}).get("body", ""),
+            )
+            result = v.create_from_template(req)
             return [_model_to_dict(result)]
 
         else:
