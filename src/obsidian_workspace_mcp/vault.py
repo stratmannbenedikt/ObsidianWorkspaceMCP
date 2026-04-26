@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import json
 from pathlib import Path
@@ -25,16 +26,25 @@ from .models import (
     GetTemplateResponse,
     ListDirectoryResponse,
     ListTemplatesResponse,
+    PropertyFilter,
+    PropertyMatch,
+    PropertySort,
+    QueryPropertiesRequest,
+    QueryPropertiesResponse,
     ReadFileResponse,
     SearchMatch,
     SearchRequest,
     SearchResponse,
     SortBy,
     SortOrder,
+    TagIndexRequest,
+    TagIndexResponse,
+    TagEntry,
     Template,
     TemplateField,
     VaultStats,
 )
+from .frontmatter import read_frontmatter
 
 
 class VaultSecurityError(Exception):
@@ -160,7 +170,7 @@ class Vault:
         )
 
     def search(self, request: SearchRequest) -> SearchResponse:
-        """Search for text inside vault files."""
+        """Search for text inside vault files with context, ranking, and pagination."""
         root = self._resolve(request.path) if request.path else self._root
         if not root.is_dir():
             raise VaultFileError(f"Search path not a directory: {request.path!r}")
@@ -168,9 +178,9 @@ class Vault:
         flags = 0 if request.case_sensitive else re.IGNORECASE
         pattern = re.compile(re.escape(request.query), flags)
 
-        total_matches = 0
         files_searched = 0
-        matches: list[SearchMatch] = []
+        # Collect per-file matches for relevance ranking
+        file_matches: dict[str, list[tuple[int, str, int, int]]] = {}  # path -> [(lineno, line, start, end)]
 
         for path in root.rglob("*"):
             if not path.is_file():
@@ -184,24 +194,61 @@ class Vault:
             except (UnicodeDecodeError, OSError):
                 continue
 
+            rel = path.relative_to(self._root).as_posix()
             for lineno, line in enumerate(text.splitlines(), start=1):
                 for m in pattern.finditer(line):
-                    total_matches += 1
-                    matches.append(
-                        SearchMatch(
-                            path=str(path.relative_to(self._root).as_posix()),
-                            line_number=lineno,
-                            line_content=line,
-                            match_start=m.start(),
-                            match_end=m.end(),
-                        )
+                    file_matches.setdefault(rel, []).append(
+                        (lineno, line, m.start(), m.end())
                     )
+
+        # Build lines cache for context (lazy — only for files that have matches)
+        file_lines_cache: dict[str, list[str]] = {}
+
+        def _get_lines(rel: str) -> list[str]:
+            if rel not in file_lines_cache:
+                try:
+                    file_lines_cache[rel] = (self._resolve(rel)).read_text(encoding="utf-8").splitlines()
+                except (UnicodeDecodeError, OSError):
+                    file_lines_cache[rel] = []
+            return file_lines_cache[rel]
+
+        # Sort files by relevance: more hits first, then by hit density
+        total_matches = sum(len(v) for v in file_matches.values())
+        sorted_files = sorted(
+            file_matches.items(),
+            key=lambda item: (-len(item[1]), item[0]),
+        )
+
+        # Build flat match list (file-grouped, relevance-ordered)
+        all_matches: list[SearchMatch] = []
+        for rel, hits in sorted_files:
+            lines = _get_lines(rel) if request.context_lines > 0 else []
+            for lineno, line, start, end in hits:
+                ctx_before: list[str] = []
+                ctx_after: list[str] = []
+                if request.context_lines > 0 and lines:
+                    ctx_before = lines[max(0, lineno - 1 - request.context_lines):lineno - 1]
+                    ctx_after = lines[lineno:min(len(lines), lineno + request.context_lines)]
+                all_matches.append(
+                    SearchMatch(
+                        path=rel,
+                        line_number=lineno,
+                        line_content=line,
+                        match_start=start,
+                        match_end=end,
+                        context_before=ctx_before,
+                        context_after=ctx_after,
+                    )
+                )
+
+        # Apply offset/limit
+        paginated = all_matches[request.offset:request.offset + request.limit]
 
         return SearchResponse(
             query=request.query,
             total_matches=total_matches,
             files_searched=files_searched,
-            matches=matches,
+            matches=paginated,
         )
 
     # ------------------------------------------------------------------
@@ -401,6 +448,191 @@ class Vault:
         if any(c in s for c in '":{}[]|>!#%@`*,'):
             return f'{name}: "{s}"'
         return f"{name}: {s}"
+
+    # ------------------------------------------------------------------
+    # Property Query (DataView-like)
+    # ------------------------------------------------------------------
+
+    def query_properties(self, request: QueryPropertiesRequest) -> QueryPropertiesResponse:
+        """Search for files based on their YAML frontmatter properties."""
+        root = self._resolve(request.path) if request.path else self._root
+        if not root.is_dir():
+            raise VaultFileError(f"Query path not a directory: {request.path!r}")
+
+        matches: list[tuple[str, dict[str, Any]]] = []
+        files_scanned = 0
+
+        for path in root.rglob("*"):
+            if not path.is_file() or path.suffix != ".md":
+                continue
+            files_scanned += 1
+
+            props = read_frontmatter(path)
+            if not props:
+                continue
+
+            if not self._matches_filters(props, request.filters):
+                continue
+
+            rel_path = path.relative_to(self._root).as_posix()
+            matches.append((rel_path, props))
+
+        # Sort
+        if request.sort:
+            matches = self._sort_property_matches(matches, request.sort)
+
+        # Apply offset and limit, then build response
+        paginated = matches[request.offset:request.offset + request.limit]
+        match_objects = []
+        for rel_path, props in paginated:
+            selected_props = props
+            if request.select:
+                selected_props = {k: v for k, v in props.items() if k in request.select}
+            match_objects.append(
+                PropertyMatch(path=rel_path, properties=selected_props)
+            )
+
+        return QueryPropertiesResponse(
+            total_files_scanned=files_scanned,
+            total_matches=len(matches),
+            matches=match_objects,
+        )
+
+    @staticmethod
+    def _matches_filters(props: dict, filters: list[PropertyFilter]) -> bool:
+        """Check if properties match all filters (AND logic)."""
+        if not filters:
+            return True
+        for f in filters:
+            val = props.get(f.field)
+            op = f.op
+            if op == "exists":
+                if f.field not in props:
+                    return False
+            elif op == "not_exists":
+                if f.field in props:
+                    return False
+            elif op == "eq":
+                if val != f.value:
+                    return False
+            elif op == "neq":
+                if val == f.value:
+                    return False
+            elif op == "contains":
+                if isinstance(val, list):
+                    if f.value not in val:
+                        return False
+                elif isinstance(val, str):
+                    if str(f.value) not in val:
+                        return False
+                else:
+                    return False
+            elif op in ("gt", "gte", "lt", "lte"):
+                if val is None:
+                    return False
+                try:
+                    cmp_val = f.value
+                    # Try numeric comparison
+                    v_num = float(val) if not isinstance(val, (int, float)) else val
+                    c_num = float(cmp_val) if not isinstance(cmp_val, (int, float)) else cmp_val
+                    if op == "gt" and not (v_num > c_num):
+                        return False
+                    if op == "gte" and not (v_num >= c_num):
+                        return False
+                    if op == "lt" and not (v_num < c_num):
+                        return False
+                    if op == "lte" and not (v_num <= c_num):
+                        return False
+                except (ValueError, TypeError):
+                    # Fall back to string comparison (handles dates like "2020-01-01")
+                    v_str, c_str = str(val), str(cmp_val)
+                    if op == "gt" and not (v_str > c_str):
+                        return False
+                    if op == "gte" and not (v_str >= c_str):
+                        return False
+                    if op == "lt" and not (v_str < c_str):
+                        return False
+                    if op == "lte" and not (v_str <= c_str):
+                        return False
+            else:
+                return False  # Unknown op
+        return True
+
+    def _sort_property_matches(
+        self, matches: list[tuple[str, dict]], sort: PropertySort
+    ) -> list[tuple[str, dict]]:
+        """Sort property matches by a field."""
+        field = sort.field
+        reverse = sort.order == SortOrder.DESCENDING
+
+        def _key(item: tuple[str, dict]) -> Any:
+            rel_path, props = item
+            if field == "path":
+                return rel_path
+            if field == "modified":
+                try:
+                    return self._mtime(self._resolve(rel_path)) or datetime.min
+                except (VaultSecurityError, VaultFileError):
+                    return datetime.min
+            val = props.get(field)
+            # Push None to end
+            if val is None:
+                return (1, "")
+            return (0, val)
+
+        return sorted(matches, key=_key, reverse=reverse)
+
+    # ------------------------------------------------------------------
+    # Tag Index
+    # ------------------------------------------------------------------
+
+    def tag_index(self, request: TagIndexRequest) -> TagIndexResponse:
+        """Build an index of tag/keyword values across the vault."""
+        root = self._resolve(request.path) if request.path else self._root
+        if not root.is_dir():
+            raise VaultFileError(f"Index path not a directory: {request.path!r}")
+
+        tag_counts: dict[str, int] = {}  # tag_value -> file count
+        files_scanned = 0
+
+        for path in root.rglob("*"):
+            if not path.is_file() or path.suffix != ".md":
+                continue
+            files_scanned += 1
+
+            props = read_frontmatter(path)
+            if not props:
+                continue
+
+            seen_this_file: set[str] = set()  # count each tag once per file
+            for prop_name in request.properties:
+                val = props.get(prop_name)
+                if val is None:
+                    continue
+                if isinstance(val, list):
+                    for item in val:
+                        tag = str(item).strip()
+                        if tag and tag not in seen_this_file:
+                            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+                            seen_this_file.add(tag)
+                elif isinstance(val, str):
+                    # Single string — treat as one tag
+                    tag = val.strip()
+                    if tag and tag not in seen_this_file:
+                        tag_counts[tag] = tag_counts.get(tag, 0) + 1
+                        seen_this_file.add(tag)
+
+        # Sort by count descending, then alphabetically
+        sorted_tags = sorted(tag_counts.items(), key=lambda x: (-x[1], x[0]))
+        # Apply min_count filter
+        sorted_tags = [(t, c) for t, c in sorted_tags if c >= request.min_count]
+
+        return TagIndexResponse(
+            properties_indexed=list(request.properties),
+            total_tags=len(sorted_tags),
+            total_files_scanned=files_scanned,
+            tags=[TagEntry(value=t, count=c) for t, c in sorted_tags],
+        )
 
     # ------------------------------------------------------------------
     # Write operations
