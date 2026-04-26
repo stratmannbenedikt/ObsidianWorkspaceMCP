@@ -138,6 +138,18 @@ class SearchRequest(BaseModel):
     file_extension: str | None = Field(
         default=None, description="Restrict search to this file extension (e.g. '.md')"
     )
+    context_lines: int = Field(
+        default=0, ge=0, le=10,
+        description="Number of surrounding lines to include per match for context",
+    )
+    limit: int = Field(
+        default=50, ge=1, le=500,
+        description="Maximum number of matches to return",
+    )
+    offset: int = Field(
+        default=0, ge=0,
+        description="Offset for pagination (skip this many matches)",
+    )
 
 
 class SearchMatch(BaseModel):
@@ -151,6 +163,14 @@ class SearchMatch(BaseModel):
     )
     match_end: int = Field(
         description="Character offset where the match ends within the line"
+    )
+    context_before: list[str] = Field(
+        default_factory=list,
+        description="Lines before the match (up to context_lines)",
+    )
+    context_after: list[str] = Field(
+        default_factory=list,
+        description="Lines after the match (up to context_lines)",
     )
 
 
@@ -265,6 +285,122 @@ class CreateFromTemplateResponse(BaseModel):
     path: str
     template_name: str
     content: str = Field(description="Full content that was written")
+
+
+# ---------------------------------------------------------------------------
+# Property Query (DataView-like)
+# ---------------------------------------------------------------------------
+
+
+class PropertyFilter(BaseModel):
+    """A single property filter condition."""
+
+    field: str = Field(description="Frontmatter property name to filter on")
+    op: str = Field(
+        default="eq",
+        description=(
+            "Comparison operator: eq (equal), neq (not equal), contains, "
+            "gt, gte, lt, lte (for numbers/dates), exists, not_exists"
+        ),
+    )
+    value: Any = Field(
+        default=None,
+        description="Value to compare against (not needed for exists/not_exists)",
+    )
+
+
+class PropertySort(BaseModel):
+    """Sort specification for property queries."""
+
+    field: str = Field(
+        description="Frontmatter property name to sort by (use 'path' or 'modified' for file metadata)"
+    )
+    order: SortOrder = Field(default=SortOrder.ASCENDING, description="Sort direction")
+
+
+class PropertyMatch(BaseModel):
+    """A single file that matched a property query."""
+
+    path: str = Field(description="Relative path of the file")
+    properties: dict[str, Any] = Field(description="Matched frontmatter properties")
+
+
+class QueryPropertiesRequest(BaseModel):
+    """Request for a DataView-like property query."""
+
+    filters: list[PropertyFilter] = Field(
+        default_factory=list,
+        description="Conditions to filter files by. Multiple filters are ANDed together.",
+    )
+    sort: PropertySort | None = Field(
+        default=None,
+        description="Sort results by a property field (default: unsorted)",
+    )
+    path: str = Field(
+        default="",
+        description="Directory to search within (empty = entire vault)",
+    )
+    limit: int = Field(
+        default=50, ge=1, le=500,
+        description="Maximum number of results to return",
+    )
+    offset: int = Field(
+        default=0, ge=0,
+        description="Offset for pagination (skip this many results)",
+    )
+    select: list[str] | None = Field(
+        default=None,
+        description=(
+            "Properties to include in results. None = all properties. "
+            "Token-saving: only return the fields you need."
+        ),
+    )
+
+
+class QueryPropertiesResponse(BaseModel):
+    """Result of a property query."""
+
+    total_files_scanned: int = Field(description="Total markdown files scanned")
+    total_matches: int = Field(description="Files matching all filters")
+    matches: list[PropertyMatch] = Field(description="Matching files with their properties")
+
+
+# ---------------------------------------------------------------------------
+# Tag Index
+# ---------------------------------------------------------------------------
+
+
+class TagEntry(BaseModel):
+    """A single tag/keyword with its occurrence count."""
+
+    value: str = Field(description="Tag or keyword value")
+    count: int = Field(description="Number of files containing this tag")
+
+
+class TagIndexRequest(BaseModel):
+    """Request for a tag/keyword index."""
+
+    path: str = Field(
+        default="",
+        description="Directory to index (empty = entire vault)",
+    )
+    properties: list[str] = Field(
+        default=["tags"],
+        description="Frontmatter fields to index as tags",
+    )
+    min_count: int = Field(
+        default=1, ge=1,
+        description="Minimum occurrence count to include in results",
+    )
+
+
+class TagIndexResponse(BaseModel):
+    """Result of a tag index operation."""
+
+    properties_indexed: list[str] = Field(description="Properties that were indexed")
+    total_tags: int = Field(description="Total unique tag values found")
+    total_files_scanned: int = Field(description="Total markdown files scanned")
+    tags: list[TagEntry] = Field(description="Tags sorted by count (descending)")
 
 
 class ErrorDetail(BaseModel):

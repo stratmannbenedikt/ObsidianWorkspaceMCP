@@ -11,9 +11,13 @@ from mcp.server.fastmcp import FastMCP
 from .models import (
     CreateTemplateRequest,
     EditFileRequest,
+    PropertyFilter,
+    PropertySort,
+    QueryPropertiesRequest,
     SearchRequest,
     SortBy,
     SortOrder,
+    TagIndexRequest,
     TemplateField,
 )
 from .vault import Vault, VaultFileError, VaultSecurityError
@@ -127,13 +131,71 @@ def search(
     path: Annotated[str, "Directory to search within (empty = entire vault)."] = "",
     case_sensitive: Annotated[bool, "Perform a case-sensitive search."] = False,
     file_extension: Annotated[str | None, "Restrict to this extension, e.g. '.md'."] = None,
+    context_lines: Annotated[int, "Number of surrounding lines per match (0-10)."] = 0,
+    limit: Annotated[int, "Maximum number of matches to return (1-500)."] = 50,
+    offset: Annotated[int, "Skip this many matches for pagination."] = 0,
 ) -> dict:
     """Search for text inside vault files."""
     req = SearchRequest(
         query=query, path=path,
         case_sensitive=case_sensitive, file_extension=file_extension,
+        context_lines=context_lines, limit=limit, offset=offset,
     )
     return get_vault().search(req).model_dump(mode="json")
+
+
+@mcp.tool()
+def query_properties(
+    filters: Annotated[list[dict] | None, (
+        "List of filter conditions. Each: {field, op, value}. "
+        "Ops: eq, neq, contains, gt, gte, lt, lte, exists, not_exists. "
+        "Multiple filters are ANDed."
+    )] = None,
+    sort: Annotated[dict | None, (
+        "Sort spec: {field, order}. Field can be a frontmatter key or 'path'/'modified'. "
+        "Order: 'ascending' or 'descending'."
+    )] = None,
+    path: Annotated[str, "Directory to search within (empty = entire vault)."] = "",
+    limit: Annotated[int, "Maximum number of results (1-500)."] = 50,
+    offset: Annotated[int, "Skip this many results for pagination."] = 0,
+    select: Annotated[list[str] | None, (
+        "Properties to include in results. Null = all. "
+        "Use this to reduce token usage — only return what you need."
+    )] = None,
+) -> dict:
+    """Query vault files by their YAML frontmatter properties — like a simplified DataView.
+
+    Scans markdown files, parses their YAML frontmatter, and returns matching files
+    with their properties. Supports filtering (eq, neq, contains, gt/lt for numbers/dates,
+    exists/not_exists), sorting by any property, and field selection for token efficiency.
+    """
+    filter_objs = [PropertyFilter(**f) for f in filters] if filters else []
+    sort_obj = PropertySort(**sort) if sort else None
+    req = QueryPropertiesRequest(
+        filters=filter_objs,
+        sort=sort_obj,
+        path=path,
+        limit=limit,
+        offset=offset,
+        select=select,
+    )
+    return get_vault().query_properties(req).model_dump(mode="json")
+
+
+@mcp.tool()
+def tag_index(
+    path: Annotated[str, "Directory to index (empty = entire vault)."] = "",
+    properties: Annotated[list[str], "Frontmatter fields to index as tags."] = ["tags"],
+    min_count: Annotated[int, "Minimum occurrence count to include."] = 1,
+) -> dict:
+    """Build an index of tag/keyword values across the vault with counts.
+
+    Scans markdown files, extracts list-valued frontmatter properties (tags, keywords, etc.),
+    and returns each unique value with its occurrence count. Useful for discovering what
+    taxonomy exists in your vault.
+    """
+    req = TagIndexRequest(path=path, properties=properties, min_count=min_count)
+    return get_vault().tag_index(req).model_dump(mode="json")
 
 
 @mcp.tool()
