@@ -90,9 +90,9 @@ jobs:
             type=raw,value={{branch}}
             type=raw,value=${{ steps.version.outputs.app_version }}
             type=raw,value=${{ steps.version.outputs.app_version }}-{{sha}}
-            type=raw,value=latest,enable={{startsWith(ref, 'refs/tags/v')}}
-            type=raw,value=${{ steps.version.outputs.app_major }},enable={{startsWith(ref, 'refs/tags/v')}}
-            type=raw,value=${{ steps.version.outputs.app_minor }},enable={{startsWith(ref, 'refs/tags/v')}}
+            type=raw,value=latest,enable='{{startsWith(ref, ''refs/tags/v'')}}'
+            type=raw,value=${{ steps.version.outputs.app_major }},enable='{{startsWith(ref, ''refs/tags/v'')}}'
+            type=raw,value=${{ steps.version.outputs.app_minor }},enable='{{startsWith(ref, ''refs/tags/v'')}}'
             type=sha,format=short
 
       - name: Build and push
