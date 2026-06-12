@@ -1,0 +1,35 @@
+# Development deployment for the Obsidian Workspace MCP server.
+#
+# Builds the image from the local Dockerfile on every `up` / `build`,
+# so you can iterate on the source without publishing to GHCR. The
+# service shape (ports, env, volume, healthcheck) is identical to the
+# "official" docker-compose.yml — only the image source changes.
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml up --build
+#   docker compose -f docker-compose.dev.yml down
+
+services:
+  obsidian-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: obsidian-workspace-mcp:dev
+    container_name: obsidian-mcp-dev
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "8000"
+      MCP_PATH: /mcp
+      OBSIDIAN_VAULT_PATH: /vault
+    volumes:
+      - ./vault:/vault:rw
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json, urllib.request; req = urllib.request.Request('http://127.0.0.1:8000/mcp', method='POST', headers={'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream'}, data=json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {'protocolVersion': '2024-11-05', 'capabilities': {}, 'clientInfo': {'name': 'healthcheck', 'version': '0'}}}).encode()); urllib.request.urlopen(req, timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

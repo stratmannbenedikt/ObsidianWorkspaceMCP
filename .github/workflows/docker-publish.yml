@@ -1,0 +1,120 @@
+name: Publish Docker image
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Avoid building & pushing on every PR — only produce artefacts for the
+# real triggers. PRs still get a build to catch breakage early.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/obsidian-workspace-mcp
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve package version
+        id: version
+        # Single source of truth: pyproject.toml's `version = "..."`. The
+        # image is tagged with this value and the workflow also exports
+        # the resolved APP_VERSION to the build step. Major/minor aliases
+        # are derived here so a release image gets `0.2` and `0` tags
+        # alongside the full `0.2.0` — but only when the version is a
+        # clean semver release (no prerelease suffix like -rc1).
+        run: |
+          VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "app_version=$VERSION" >> "$GITHUB_OUTPUT"
+          # Emit "<major>" and "<major>.<minor>" aliases for clean semver
+          # versions, so `0.2.0` → `0.2` and `0`; `0.2.0-rc1` produces
+          # no aliases (only the full prerelease tag).
+          if [[ "$VERSION" =~ ^([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
+              echo "app_major=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+              echo "app_minor=${BASH_REMATCH[1]}.${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Resolved app version: $VERSION"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Cache layers between runs to keep builds fast.
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Tag strategy. The pyproject.toml version is the source of truth
+          # for the image tag, and the workflow derives the major/minor
+          # aliases from it (only for clean semver releases).
+          #
+          #   • push to a `v*` tag (release)  → <version>, latest, major, minor, sha
+          #   • push to main                  → main, <version>, <version>-<sha>, sha
+          #   • PR (build only)               → no push
+          #   • workflow_dispatch on main     → same as push to main
+          tags: |
+            type=raw,value={{branch}}
+            type=raw,value=${{ steps.version.outputs.app_version }}
+            type=raw,value=${{ steps.version.outputs.app_version }}-{{sha}}
+            type=raw,value=latest,enable={{startsWith(ref, 'refs/tags/v')}}
+            type=raw,value=${{ steps.version.outputs.app_major }},enable={{startsWith(ref, 'refs/tags/v')}}
+            type=raw,value=${{ steps.version.outputs.app_minor }},enable={{startsWith(ref, 'refs/tags/v')}}
+            type=sha,format=short
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.app_version }}
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+        env:
+          ACTIONS_RUNTIME_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Move the cache into the location the next run expects. Buildx
+      # cannot read from a cache it just wrote to, hence the rename.
+      - name: Move buildx cache
+        if: always() && github.event_name != 'pull_request'
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache 2>/dev/null || true

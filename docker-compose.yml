@@ -1,0 +1,47 @@
+# "Official" deployment for the Obsidian Workspace MCP server.
+#
+# Pulls the published image from GitHub Container Registry:
+#   ghcr.io/stratmannbenedikt/obsidian-workspace-mcp
+# and exposes the streamable-HTTP endpoint on host port 8000 at /mcp.
+#
+# Two volume strategies are shown below:
+#   1. (default) bind-mount a host directory containing your vault
+#   2. (commented) use a named docker volume managed by compose
+#
+# For local development (rebuilding the image from source) use
+# docker-compose.dev.yml instead.
+
+services:
+  obsidian-mcp:
+    image: ghcr.io/stratmannbenedikt/obsidian-workspace-mcp:latest
+    container_name: obsidian-mcp
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "8000"
+      MCP_PATH: /mcp
+      OBSIDIAN_VAULT_PATH: /vault
+    volumes:
+      # --- 1. Bind mount a host directory (active by default) ---
+      # The directory on the host must exist and be readable by UID 1000
+      # (the `mcp` user inside the container).
+      - ./vault:/vault:rw
+
+      # --- 2. Named docker volume (uncomment to use instead) ---
+      # Useful when the host has no vault directory yet, or when you want
+      # docker to manage the data lifecycle. Populate it with:
+      #   docker compose cp ./my-vault/. obsidian-mcp:/vault
+      # - obsidian-vault-data:/vault
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json, urllib.request; req = urllib.request.Request('http://127.0.0.1:8000/mcp', method='POST', headers={'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream'}, data=json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {'protocolVersion': '2024-11-05', 'capabilities': {}, 'clientInfo': {'name': 'healthcheck', 'version': '0'}}}).encode()); urllib.request.urlopen(req, timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+# Uncomment when using the named-volume option above.
+# volumes:
+#   obsidian-vault-data:

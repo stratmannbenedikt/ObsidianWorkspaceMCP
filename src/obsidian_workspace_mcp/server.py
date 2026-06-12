@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+from importlib import metadata
 from pathlib import Path
 from typing import Annotated
 
@@ -25,9 +27,48 @@ from .vault import Vault, VaultFileError, VaultSecurityError
 logger = logging.getLogger(__name__)
 
 APP_NAME = "obsidian-workspace-mcp"
-VERSION = "0.1.0"
 
-mcp = FastMCP(APP_NAME)
+
+def _resolve_version() -> str:
+    """Return the installed package version, or "0.0.0+unknown" as a fallback.
+
+    The package metadata is the single source of truth (pyproject.toml's
+    `version = "..."`). Reading it via importlib.metadata means the value
+    is correct in every distribution channel: source checkout, wheel
+    install, and the Docker image built from this repo.
+    """
+    try:
+        return metadata.version("obsidian-workspace-mcp")
+    except metadata.PackageNotFoundError:
+        return "0.0.0+unknown"
+
+
+VERSION = _resolve_version()
+
+DEFAULT_HTTP_HOST = "127.0.0.1"
+DEFAULT_HTTP_PORT = 8000
+DEFAULT_STREAMABLE_HTTP_PATH = "/mcp"
+
+
+def _build_mcp() -> FastMCP:
+    """Build the FastMCP server, applying HTTP transport defaults from env vars.
+
+    Honours the following environment variables (used when run with the
+    ``streamable-http`` transport):
+
+    - ``MCP_HOST``  — bind address (default: 127.0.0.1)
+    - ``MCP_PORT``  — TCP port (default: 8000)
+    - ``MCP_PATH``  — streamable-HTTP endpoint path (default: /mcp)
+    """
+    return FastMCP(
+        APP_NAME,
+        host=os.environ.get("MCP_HOST", DEFAULT_HTTP_HOST),
+        port=int(os.environ.get("MCP_PORT", str(DEFAULT_HTTP_PORT))),
+        streamable_http_path=os.environ.get("MCP_PATH", DEFAULT_STREAMABLE_HTTP_PATH),
+    )
+
+
+mcp = _build_mcp()
 
 # ---------------------------------------------------------------------------
 # Vault lifecycle
@@ -260,8 +301,33 @@ def create_from_template(
 # Entrypoint
 # ---------------------------------------------------------------------------
 
-async def main(vault_path: str | Path | None = None) -> None:
+
+def reconfigure_http(
+    host: str | None = None,
+    port: int | None = None,
+    path: str | None = None,
+) -> None:
+    """Update the HTTP transport settings on the live ``mcp`` instance.
+
+    Useful for CLI flag overrides after the module has already constructed
+    the FastMCP object from environment variables.
+    """
+    if host is not None:
+        mcp.settings.host = host
+    if port is not None:
+        mcp.settings.port = port
+    if path is not None:
+        mcp.settings.streamable_http_path = path
+
+
+async def main(
+    vault_path: str | Path | None = None,
+    transport: str = "stdio",
+) -> None:
     """Run the MCP server."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     init_vault(vault_path)
-    await mcp.run_async()
+    if transport == "streamable-http":
+        await mcp.run_streamable_http_async()
+    else:
+        await mcp.run_stdio_async()
