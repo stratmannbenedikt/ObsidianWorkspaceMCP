@@ -13,7 +13,7 @@ dependencies = [
 dev = ["pytest", "ruff"]
 
 [project.scripts]
-obsidian-workspace-mcp = "obsidian_workspace_mcp.__main__:main"
+obsidian-workspace-mcp = "obsidian_workspace_mcp.__main__:main_entrypoint"
 
 [build-system]
 requires = ["hatchling"]

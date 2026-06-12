@@ -23,16 +23,16 @@ The agent sees the vault as a set of tools (`vault_stats`, `list_directory`, `re
 ## Architecture
 
 ```
-┌─────────────────┐     MCP (stdio)     ┌──────────────────────────────┐
-│  AI Agent /     │◄──────────────────►│  obsidian-workspace-mcp      │
-│  MCP Client     │                     │                              │
-└─────────────────┘                     │  Vault ──────► vault root    │
-                                         │    ├─ vault.py (operations)  │
-                                         │    └─ models.py (schemas)   │
-                                         └──────────────────────────────┘
+┌─────────────────┐    MCP (stdio / HTTP)   ┌──────────────────────────────┐
+│  AI Agent /     │◄───────────────────────►│  obsidian-workspace-mcp      │
+│  MCP Client     │                          │                              │
+└─────────────────┘                          │  Vault ──────► vault root    │
+                                             │    ├─ vault.py (operations)  │
+                                             │    └─ models.py (schemas)   │
+                                             └──────────────────────────────┘
 ```
 
-**Security:** All file paths are resolved relative to the configured vault root. Path traversal (`..`) is explicitly blocked. The server performs no shell execution and opens no network sockets beyond stdio.
+**Security:** All file paths are resolved relative to the configured vault root. Path traversal (`..`) is explicitly blocked. The server performs no shell execution and opens no network sockets beyond the configured HTTP transport (when enabled).
 
 ## Installation
 
@@ -61,25 +61,145 @@ obsidian-workspace-mcp --vault /home/user/vaults/main-vault
 
 ## Running
 
+The server speaks two transports:
+
+| Transport         | Use case                                                          |
+|-------------------|-------------------------------------------------------------------|
+| `stdio` (default) | Local AI clients that launch the server as a child process.       |
+| `streamable-http` | Containerised / network-accessible deployments (Docker, etc.).    |
+
+### stdio (default)
+
 ```bash
 # Via uv (recommended)
 OBSIDIAN_VAULT_PATH=/path/to/vault uv run obsidian-workspace-mcp
 
 # Or after installation
-obsidian-workspace-mcp
-
-# With Claude Desktop / other MCP clients:
-# configure the server path in your MCP client config, e.g.:
-# {
-#   "mcpServers": {
-#     "obsidian-vault": {
-#       "command": "uv",
-#       "args": ["run", "obsidian-workspace-mcp"],
-#       "env": { "OBSIDIAN_VAULT_PATH": "/path/to/vault" }
-#     }
-#   }
-# }
+obsidian-workspace-mcp --vault /path/to/vault
 ```
+
+With Claude Desktop / other MCP clients, configure the server path in your
+MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "obsidian-vault": {
+      "command": "uv",
+      "args": ["run", "obsidian-workspace-mcp"],
+      "env": { "OBSIDIAN_VAULT_PATH": "/path/to/vault" }
+    }
+  }
+}
+```
+
+### streamable-http
+
+```bash
+# Bind to 127.0.0.1:8000 on /mcp
+OBSIDIAN_VAULT_PATH=/path/to/vault \
+  obsidian-workspace-mcp --transport streamable-http
+
+# Bind to all interfaces on a custom port/path
+OBSIDIAN_VAULT_PATH=/path/to/vault \
+  obsidian-workspace-mcp --transport streamable-http \
+                        --host 0.0.0.0 --port 9000 --path /mcp
+```
+
+All HTTP settings can also be supplied via environment variables:
+
+| Env var               | CLI flag     | Default     |
+|-----------------------|--------------|-------------|
+| `MCP_HOST`            | `--host`     | `127.0.0.1` |
+| `MCP_PORT`            | `--port`     | `8000`      |
+| `MCP_PATH`            | `--path`     | `/mcp`      |
+| `OBSIDIAN_VAULT_PATH` | `--vault`    | _(none)_    |
+
+Point your MCP client at `http://<host>:<port><path>`. Example with the
+Claude Desktop HTTP-style config:
+
+```json
+{
+  "mcpServers": {
+    "obsidian-vault": {
+      "url": "http://localhost:8000/mcp"
+    }
+  }
+}
+```
+
+## Docker
+
+A multi-stage `Dockerfile` and example `docker-compose.yml` files are included.
+The published image lives at
+`ghcr.io/stratmannbenedikt/obsidian-workspace-mcp` and is rebuilt on every
+push to `main` and on every `v*` tag (see
+[`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml)).
+
+**Image version** is sourced from `pyproject.toml`'s `version` field — the
+same value the Python package reports via `importlib.metadata.version()`.
+The GHCR workflow reads it, passes it as `APP_VERSION` to the Docker
+build, and uses it to derive the image tag set:
+
+| Trigger                | Tags produced                                |
+|------------------------|----------------------------------------------|
+| push to `main`         | `main`, `<version>`, `<version>-<short-sha>`, `<short-sha>` |
+| push of `v*` tag       | `<version>`, `latest`, `<major>`, `<minor>`, `<short-sha>`  |
+| pull request           | _(build only — no push)_                     |
+| manual dispatch        | _(same as push to the current ref)_          |
+
+For prerelease versions (e.g. `0.2.0-rc1`) only the full version is
+tagged — the `<major>` and `<minor>` aliases are reserved for clean
+semver releases, so a `0.2.0-rc1` build never accidentally shadows the
+real `0.2.0` release.
+
+### Quick start (published image)
+
+```bash
+# 1. Put your vault somewhere on the host, e.g. ~/vault
+mkdir -p ~/vault && echo "# hello" > ~/vault/welcome.md
+
+# 2. Run the container, bind-mounting the host directory as /vault
+docker run -d --name obsidian-mcp \
+  -p 8000:8000 \
+  -v "$HOME/vault:/vault:rw" \
+  -e OBSIDIAN_VAULT_PATH=/vault \
+  ghcr.io/stratmannbenedikt/obsidian-workspace-mcp:latest
+```
+
+The MCP endpoint is now available at `http://localhost:8000/mcp`.
+
+### docker compose
+
+Two compose files are provided:
+
+| File                       | Purpose                                                                |
+|----------------------------|------------------------------------------------------------------------|
+| `docker-compose.yml`       | **Production-style** deployment — pulls `ghcr.io/.../obsidian-workspace-mcp:latest`. |
+| `docker-compose.dev.yml`   | **Development** deployment — builds the image from the local `Dockerfile` on every `up`.   |
+
+Both expose the MCP endpoint on `http://localhost:8000/mcp`, mount the
+host vault at `/vault` inside the container, and include a healthcheck.
+
+#### Run from the published image (default)
+
+```bash
+mkdir -p ./vault && echo "# hello" > ./vault/welcome.md
+docker compose up -d
+docker compose logs -f obsidian-mcp
+```
+
+#### Build locally during development
+
+```bash
+mkdir -p ./vault && echo "# hello" > ./vault/welcome.md
+docker compose -f docker-compose.dev.yml up --build
+docker compose -f docker-compose.dev.yml down
+```
+
+The dev compose tags the built image as `obsidian-workspace-mcp:dev` and
+runs the container as `obsidian-mcp-dev` so it does not collide with a
+production container started from `docker-compose.yml`.
 
 ## Available Tools
 
@@ -156,14 +276,20 @@ ObsidianWorkspaceMCP/
 ├── pyproject.toml              # Package + tool configuration
 ├── README.md                   # This file
 ├── LICENSE
-├── .gitignore
+├── Dockerfile                  # Multi-stage container build (HTTP transport)
+├── docker-entrypoint.sh        # Container entrypoint wrapper (exports APP_VERSION)
+├── docker-compose.yml          # Production-style compose (pulls GHCR image)
+├── docker-compose.dev.yml      # Dev compose (builds the image from source)
+├── .dockerignore
+├── .github/workflows/
+│   └── docker-publish.yml      # CI: build & push to ghcr.io
 ├── .agent/                     # Agent working notes (gitignored)
 │   ├── TODO.md
 │   ├── DECISIONS.md
 │   └── KNOWN_ISSUES.md
 └── src/obsidian_workspace_mcp/
     ├── __init__.py             # Public API / exports
-       ├── __main__.py             # CLI entry point
+    ├── __main__.py             # CLI entry point
     ├── models.py               # Pydantic request/response schemas
     ├── vault.py                # Core vault operations
     ├── server.py               # MCP server + protocol handlers
@@ -218,3 +344,15 @@ Use the `obsidian-vault` MCP tools to browse, search, and modify notes in the co
 ```
 
 Place this file in your OpenClaw skills directory or reference it in your agent configuration.
+
+For HTTP deployments, point the `command`/`args` at the containerised
+server instead, e.g. swap the snippet for:
+
+```yaml
+metadata:
+  openclaw:
+    requires:
+      mcpServers:
+        obsidian-vault:
+          url: http://localhost:8000/mcp
+```
