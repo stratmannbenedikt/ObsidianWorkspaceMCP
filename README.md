@@ -304,6 +304,78 @@ ObsidianWorkspaceMCP/
 - **UTF-8 only** — Files are read and written as UTF-8. Binary files are not supported (this is a note-taking tool).
 - **Single vault per server instance** — One server process serves one vault. Run multiple instances for multiple vaults.
 
+## Roadmap
+
+The server intentionally targets the **filesystem-only** niche: plain markdown,
+no Obsidian process, no REST-API plugin. The current 14 tools cover the
+common CRUD/search/filter/template surface. The features below are the
+next-highest-value additions identified by comparing with the broader
+Obsidian-MCP landscape (e.g. `MarkusPfundstein/mcp-obsidian`,
+`cyanheads/obsidian-mcp-server`). None are implemented yet — this list is
+the working backlog, not a changelog.
+
+### Structural & content editing
+- **Section-aware `edit_file`** — replace/append/prepend content at a
+  *heading path*, a *block reference* (`^block-id`), or a *frontmatter
+  field*, instead of a raw text match. Avoids the "my one-line change
+  rewrote three places" failure mode of the current `old_text` →
+  `new_text` replace.
+- **`obsidian://vault/{path}` document map** — return a catalog of a
+  note's headings, block references, and frontmatter fields, so the next
+  surgical edit has well-defined targets.
+- **Wiki/markdown link graph** — parse `[[wikilink]]` and `[txt](path.md)`
+  references, expose outgoing links per note and a backlinks query.
+  Standard knowledge-management feature, currently missing entirely.
+
+### Tags
+- **Inline `#tag` awareness** — `tag_index` and `query_properties` only
+  see the frontmatter `tags:` array. Inline `#foo` occurrences in the
+  body are invisible to indexing today.
+- **Tag reconciliation** — a `manage_tags` tool that can add/remove/list
+  tags in *either* representation (frontmatter only, inline only, or
+  both) so the frontmatter `tags:` array and the body `#tag` syntax stay
+  in sync.
+
+### Frontmatter
+- **First-class frontmatter operations** — `get_frontmatter`,
+  `set_frontmatter_field`, `remove_frontmatter_field`. Today frontmatter
+  is only read implicitly by `query_properties` / `tag_index`; mutating
+  it requires a full-file `edit_file` round-trip.
+
+### MCP primitives
+- **Resources alongside tools** — `obsidian://tags`, `obsidian://vault/{path}`,
+  `obsidian://status`. Lets clients that prefer resource attachments
+  (instead of tool calls) attach a note or a tag snapshot directly to
+  context. Data is the same as the existing tools; the value is the
+  declarative URI.
+- **Server-sent `instructions` on `initialize`** — surface deployment
+  context (active path policy, read-only mode, etc.) to spec-compliant
+  clients.
+
+### Security & deployment
+- **Folder-scoped path policy** — `OBSIDIAN_READ_PATHS` /
+  `OBSIDIAN_WRITE_PATHS` env vars for prefix-based allowlists, plus an
+  `OBSIDIAN_READ_ONLY` global kill switch. Currently the only gate is
+  the vault-boundary traversal check.
+- **Streamable-HTTP auth** — `MCP_AUTH_MODE` of `none | jwt | oauth`.
+  Today the HTTP transport is unauthenticated, which is fine for
+  `127.0.0.1` but unsafe the moment the listener is reachable beyond
+  loopback.
+
+### Destructive-op guardrails
+- **Elicited confirmation for `delete_file`** — request human approval
+  via MCP `elicit` (with a `destructiveHint` fallback for clients that
+  don't support elicitation) before removing a file.
+
+### Out of scope
+Some features from the broader Obsidian-MCP space depend on Obsidian
+itself running and are **not** planned for this server, since they would
+break the "no Obsidian dependencies" design choice:
+- `obsidian_open_in_ui` (open a file in the live Obsidian app)
+- `obsidian_execute_command` / `obsidian_list_commands` (command-palette
+  passthrough)
+- Omnisearch / Text Extractor passthrough (plugin-side BM25 + OCR)
+
 ## OpenClaw Skill
 
 To use this MCP server with [OpenClaw](https://openclaw.ai), create a skill that registers the server as an MCP tool provider. Here's an example `SKILL.md`:
